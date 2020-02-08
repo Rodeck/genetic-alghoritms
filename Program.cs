@@ -47,6 +47,25 @@ namespace optimalization
             return new Bit22(stringValue);
         }
 
+        public Bit22 CopyAndMutate(decimal min, decimal max) 
+        {
+            Random rnd = new Random();
+            var newBit = new Bit22(this.value);
+            do
+            {
+                var bitIdx = rnd.Next(0, 21);
+                char valueAt = this.value[bitIdx];
+                var stringValue = new StringBuilder(this.value)
+                    .Remove(bitIdx, 1)
+                    .Insert(bitIdx, valueAt == '1' ? '0' : '1')
+                    .ToString();
+                newBit = new Bit22(stringValue);
+            }
+            while(newBit.decValue < min || newBit.decValue > max);
+
+            return newBit;
+        }
+
         public static decimal GetClostest(decimal p1, int bitIdx) {
             if (bitIdx < 0 || bitIdx > 21)
                 throw new Exception("Out of range");
@@ -94,11 +113,29 @@ namespace optimalization
         {
             int iter = 0;
             double max = -1000000;
+                            double p1 = f(x);
+            while(iter < maxIter) 
+            {
+                var clostest = (double)Bit22.GetClostestOne((decimal)x, 1, f);
+                double p2 = f(clostest);
+                if (p1 > p2)
+                {
+                    return (p1, x);
+                }
+                max = p2;
+                iter++;
+            }
+            return (max, x + step);
+        }
+
+        public static (double, double) SimpleGrad(double x, Func<double, double> f, double step, int maxIter = 1000) 
+        {
+            int iter = 0;
+            double max = -1000000;
             while(iter < maxIter) 
             {
                 double p1 = f(x);
-                var clostest = (double)Bit22.GetClostestOne((decimal)x, 1, f);
-                double p2 = f(clostest);
+                double p2 = f(x + step);
                 if (p1 > p2)
                 {
                     return (p1, x);
@@ -181,9 +218,18 @@ namespace optimalization
             {
                 generation = Fit(generation, out bestValue, f);
                 generation = CrossOver(generation);
+                generation = Mutate(generation).ToArray();
             }
 
-            return ((double)bestValue.decValue, ((double)bestValue.decValue));
+            return ((double)bestValue.decValue, (f((double)bestValue.decValue)));
+        }
+
+        public static IEnumerable<Bit22> Mutate(Bit22[] generation)
+        {
+            foreach(var bit in generation)
+            {
+                yield return bit.CopyAndMutate(-1, 2);
+            }
         }
 
         public static Bit22[] Fit(Bit22[] generation, out Bit22 fittest, Func<double, double> f)
@@ -201,10 +247,30 @@ namespace optimalization
                 f((double)x.decValue));
 
             var sum = values.Sum();
-            var nextPopulationNumbers = values.Select(x => 
+            int populationNumber = 4;
+            var nextPopulationNumbers = values.OrderByDescending(x => x).Select(x => 
             {
-               return Math.Round(generation.Length * x/sum, MidpointRounding.AwayFromZero);
+                var current = (int)Math.Abs(Math.Round(generation.Length * x/sum));
+                if (populationNumber >= current)
+                {
+                    populationNumber -= current;
+                    return current;
+                }
+                else
+                {
+                    populationNumber = 0;
+                    return populationNumber;
+                }
             }).ToList();
+
+            var all = nextPopulationNumbers.Sum(x => x);
+
+            if ( all < 4)
+            {
+                int toAdd = 4 - all;
+                int max = nextPopulationNumbers.Max();
+                nextPopulationNumbers[0] = nextPopulationNumbers[0] + toAdd;
+            }
             
             var nextPopulation = new List<Bit22>();
 
@@ -251,9 +317,10 @@ namespace optimalization
         static void Main(string[] args)
         {
             var b = new Bit22(3);
-            int iter = 1000;
+            int iter = 10;
             List<double> values = new List<double>();
             List<(double, double)> resGrad = new List<(double ,double)>();
+            List<(double, double)> simpleGradResult = new List<(double ,double)>();
             List<(double, double)> resAnn = new List<(double ,double)>();
             Func<double, double> f = x => x * Math.Sin(10 * Math.PI * x) + 1;
 
@@ -264,33 +331,50 @@ namespace optimalization
 
             var sw = new Stopwatch();
             sw.Start();
-            foreach(var x in values) 
+            foreach(var x in values)
             {
-                resGrad.Add(Optimizer.GradMultipleClostests(x, f, 0.001f, 100));
+                resGrad.Add(Optimizer.GradMultipleClostests(x, f, 0.001f, 1));
             }
             sw.Stop();
             var gradT = sw.ElapsedMilliseconds;
+
+            sw.Start();
+            foreach(var x in values.Take(1)) 
+            {
+                simpleGradResult.Add(Optimizer.SimpleGrad(x, f, 0.001f, 1));
+            }
+            sw.Stop();
+            var simpleGradT = sw.ElapsedMilliseconds;
 
             sw = new Stopwatch();
             sw.Start();
             foreach(var x in values) 
             {
-                resAnn.Add(Optimizer.Annealing(x, f, 0.0001, .8, 200));
+                resAnn.Add(Optimizer.Annealing(x, f, 0.0000001, .9999, 100));
             }
             sw.Stop();
             var annT = sw.ElapsedMilliseconds;
 
             var maxGrad = resGrad.OrderByDescending(x => x.Item1).First();
+            var simpleGrad = simpleGradResult.OrderByDescending(x => x.Item1).First();
             var maxAnn = resAnn.OrderByDescending(x => x.Item1).First();
-            var genetic = Optimizer.GeneticAlg(f, 4, 10);
-            Console.WriteLine($"f({maxGrad.Item2}) = {maxGrad.Item1}, fvalue={f(maxGrad.Item2)} T={gradT}");
-            Console.WriteLine($"f({maxAnn.Item2}) = {maxAnn.Item1}, fvalue={f(maxGrad.Item2)} T={annT}");
-            Console.WriteLine($"f({genetic.Item2}) = {genetic.Item1}, fvalue={f(genetic.Item2)} T={annT}");
+
+            sw = new Stopwatch();
+            sw.Start();
+            var genetic = Optimizer.GeneticAlg(f, 10, 1000);
+            sw.Stop();
+            var genT = sw.ElapsedMilliseconds;
+
+            //Console.WriteLine($"f({maxGrad.Item2}) = {maxGrad.Item1} T={gradT}");
+            // Console.WriteLine($"f({simpleGrad.Item2}) = {simpleGrad.Item1} T={simpleGradT}");
+            // Console.WriteLine($"f({maxAnn.Item2}) = {maxAnn.Item1}");
+            Console.WriteLine($"f({genetic.Item2}) = {genetic.Item1}, T={genT}");
             
 
             //var bit = new Bit22(-0.999999m);
             //var clostest = Bit22.GetClostest(-0.999998m, 21);
             //Console.WriteLine(clostest);
+            //TestGrad(f);
         }
 
         public static double GetRandomNumber(double minimum, double maximum)
@@ -298,5 +382,43 @@ namespace optimalization
             Random random = new Random();
             return random.NextDouble() * (maximum - minimum) + minimum;
         }
+
+        public static void TestGrad(Func<double, double> f)
+        {
+            Stopwatch sw = new Stopwatch();
+            var result = new List<(float, int, long, (double, double))>();
+            // float[] steps = new float[] { 0.0001f, 0.001f, 0.01f, 0.1f, 1.0f };
+            float[] steps = new float[] { 0.01f };
+            int[] randomPointsCount = new int[] { 1, 5, 10, 20, 100, 1000, 10000};
+            foreach (var step in steps)
+            {
+                foreach (var randomPoints in randomPointsCount)
+                {
+                    sw.Start();
+                    var bestResult = GetResult(randomPoints, f, step).OrderByDescending(x => x.Item2).First();
+                    sw.Stop();
+                    
+                    result.Add((step, randomPoints, sw.ElapsedMilliseconds, bestResult));
+                }
+            }
+
+            double searchedY = 2.85f;
+
+            foreach(var output in result)
+            {
+                Console.WriteLine($"{output.Item1}; {output.Item2}; {output.Item3}; {output.Item4.Item2/searchedY * 100}");
+            }
+        }
+
+        public static IEnumerable<(double, double)> GetResult(int randomPoints, Func<double, double> f, float step)
+        {
+            for (int i = 0; i < randomPoints; i ++) 
+            {
+                double p1 = GetRandomNumber(-1, 2);
+                yield return Optimizer.SimpleGrad(p1, f, step, 2000);
+            }
+        }
+
+
     }
 }
